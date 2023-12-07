@@ -1,0 +1,6 @@
+openai==0.28
+pandas
+pycharm
+
+chromadb
+markdown-to-json
