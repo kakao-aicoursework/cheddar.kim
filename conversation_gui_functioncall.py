@@ -11,11 +11,12 @@ import chromadb
 import openai
 # import markdown_to_json
 import json
+import uuid
 
 import os
 
+global vectordb_ids, vectordb_docs, collection
 openai.api_key = os.environ.get("LLM_LECTURE_KEY")
-
 
 # response에 CSV 형식이 있는지 확인하고 있으면 저장하기
 def load_kakao_channel_info ():
@@ -28,29 +29,27 @@ def load_kakao_channel_info ():
 def parse_markdown_manually (data_in_line:list) :
     
     data = {}
-    in_context = False
     tmp_data_name = ""
     tmp_data_context = ""
     
     for i, v in enumerate(data_in_line) :
-        print(v)
+        if len(v) == 0 : continue
         if i == 0 :
-            data["fileinfo"] = v
+            tmp_data_name = "doc_title"
+            tmp_data_context = v
             continue
-        elif v[0] == "#" :
-            if in_context :
-                data[tmp_data_name] = tmp_data_context
-                in_context = False
+        if v[0] == "#" :
+            data[tmp_data_name] = tmp_data_context.strip()
             tmp_data_context = ""
-            tmp_data_name = v[1:]
+            tmp_data_name = v[1:].strip()
             continue
-        elif in_context :
-            tmp_data_context += "\n"
-            tmp_data_context += v
+        tmp_data_context += "\n"
+        tmp_data_context += v
+        continue
     
     return data
 
-def data_regularization_using_gpt () :
+def data_vectorization_using_gpt (collection) :
     
     temperature = 0.0
     max_tokens = 4096
@@ -60,64 +59,46 @@ def data_regularization_using_gpt () :
     
     # jsonified = markdown_to_json.jsonify(data)
     
-    data = parse_markdown_manually(data.split("\n"))
-    print(data)
+    parsed_data = parse_markdown_manually(data.split("\n"))
+    # print("data", parsed_data)
     
-    # prompt = f"""
-    #     You are an expert the data engineer.
-    #     Jsonize data below.
-    #     Don't skip any information inside.
-    #     Show all results.
-        
-    #     {data}
-    # """
-    # prompt2 = f"""
-    # """
-    
-    # completion = openai.ChatCompletion.create(
-    #     model="gpt-3.5-turbo",
-    #     messages=[
-    #         {
-    #             "role": "user",
-    #             "content": prompt
-    #         }
-    #     ],
-    #     temperature=temperature,
-    #     # max_tokens=max_tokens,
-    # )
+    ids = []
+    doc_meta = []
+    documents = {}
+    embeddings = []
 
-    # regulaized = completion.choices[0].message.content
-    # print(regulaized)
-    
+    doc_title = ""
+    for i, key in enumerate(parsed_data.keys()) :
+        if key == "doc_title" :
+            doc_title = parsed_data[key]
+            continue
+        id = str(uuid.uuid4())[:8]
 
-    
-    # ids = []
-    # doc_meta = []
-    # documents = {}
-    # embeddings = []
+        document_to_embed = f"{key}: {parsed_data[key]}"
 
-    # for idx in range(len(filter_df)):
-    #     item = filter_df.iloc[idx]
-    #     id = item['Name'].lower().replace(' ','-')
+        meta = {
+        }
+        embedding = get_vector_from_openai(document_to_embed)
 
-    #     document_to_embed = f"{item['Name']}: {item['Synopsis']} : {str(item['Cast']).strip().lower()} : {str(item['Genre']).strip().lower()}"
-    #     meta = {
-    #         "rating" : item['Rating']
-    #     }
-    #     embedding = get_vector_from_openai(document_to_embed)
-
-    #     ids.append(id)
-    #     doc_meta.append(meta)
-    #     documents[id] = {
-    #     "Name" : item["Name"],
-    #     "Synopsis" : item["Synopsis"],
-    #     "Cast" : item["Cast"].strip().lower(),
-    #     "Genre" : item["Genre"].strip().lower(),
-    #     }
-    #     embeddings.append(embedding)
+        ids.append(id)
+        doc_meta.append(meta)
+        documents[id] = {
+            "Doc" : doc_title,
+            "Title" : key,
+            "Contents" : parsed_data[key],
+        }
+        embeddings.append(embedding)
     
+    # DB 저장
+    collection.add(
+        # documents=documents,
+        embeddings=embeddings,
+        # metadatas=doc_meta,
+        ids=ids
+    )
+    print("vector db update completed")
     
-    print("data regular not yet")
+    return ids, documents
 
 def get_vector_from_openai (text) :
     response = openai.Embedding.create(
@@ -126,6 +107,17 @@ def get_vector_from_openai (text) :
     )
     return response.data[0].embedding
 
+def query_kakao_channel_info (query_text) :
+    global vectordb_ids, vectordb_docs, collection
+    
+    result = collection.query(
+        query_embeddings=get_vector_from_openai(query_text),
+        n_results=3,
+    )
+    results = []
+    for id in result["ids"][0] :
+        results.append(vectordb_docs[id])
+    return results
 
 
 def send_message(message_log, functions, gpt_model="gpt-3.5-turbo", temperature=0.1):
@@ -136,12 +128,12 @@ def send_message(message_log, functions, gpt_model="gpt-3.5-turbo", temperature=
         functions=functions,
         function_call='auto',
     )
-
+    
     response_message = response["choices"][0]["message"]
 
     if response_message.get("function_call"):
         available_functions = {
-            "load_kakao_channel_info": load_kakao_channel_info,
+            "query_kakao_channel_info": query_kakao_channel_info,
         }
         function_name = response_message["function_call"]["name"]
         fuction_to_call = available_functions[function_name]
@@ -156,7 +148,7 @@ def send_message(message_log, functions, gpt_model="gpt-3.5-turbo", temperature=
             {
                 "role": "function",
                 "name": function_name,
-                "content": function_response,
+                "content": json.dumps(function_response),
             }
         )  # 함수 실행 결과도 GPT messages에 추가하기
         response = openai.ChatCompletion.create(
@@ -182,16 +174,34 @@ def main():
 
     functions = [
         {
-            "name": "load_kakao_channel_info",
+            "name": "query_kakao_channel_info",
             "description": "Get a document which describes introduction of kakaotalk channel API.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "query_text": {
+                        "type": "string",
+                        "description": "a keyword for search information from kakao api database",
+                    },
                 },
-                "required": [],
+                "required": ["query_text"],
             },
         }
     ]
+    
+    # create vectordb client
+    client = chromadb.EphemeralClient()
+    # client = chromadb.PersistentClient()
+
+    global collection
+    collection = client.get_or_create_collection(
+        name="kakao_api",
+        metadata={"hnsw:space": "l2"}
+    )
+
+    global vectordb_ids, vectordb_docs
+    vectordb_ids, vectordb_docs = data_vectorization_using_gpt(collection)
+
 
     def show_popup_message(window, message):
         popup = tk.Toplevel(window)
@@ -253,20 +263,6 @@ def main():
         conversation.config(state=tk.DISABLED)
         # conversation을 수정하지 못하게 설정하기
         conversation.see(tk.END)
-
-
-    # load chromadb
-    
-    # create vectordb client
-    client = chromadb.EphemeralClient()
-    # client = chromadb.PersistentClient()
-
-    collection = client.get_or_create_collection(
-        name="kakao_api",
-        metadata={"hnsw:space": "l2"}
-    )
-
-    # data_regularization_using_gpt()
 
     window = tk.Tk()
     window.title("카카오 서비스 챗봇")
