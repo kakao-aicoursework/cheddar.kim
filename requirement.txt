@@ -4,3 +4,5 @@ pycharm
 
 chromadb
 markdown-to-json
+langchain
+tiktoken
