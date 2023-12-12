@@ -112,7 +112,7 @@ def query_kakao_channel_info (query_text) :
     
     result = collection.query(
         query_embeddings=get_vector_from_openai(query_text),
-        n_results=3,
+        n_results=2,
     )
     results = []
     for id in result["ids"][0] :

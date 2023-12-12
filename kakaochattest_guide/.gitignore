@@ -159,7 +159,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-ex_com.sh
-example/
-project_step1/datas/
-git_key
+
+
+# vscode
+.vscode/
