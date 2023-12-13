@@ -1,6 +1,6 @@
 from dto import ChatbotRequest
 from samples import list_card
-import aiohttp
+import requests
 import time
 import logging
 import openai
@@ -32,7 +32,7 @@ vdb_ids, vdb_docs, vdb_collection = create_vectordb()
 # )
 # print("result", result)
 
-async def callback_handler(request: ChatbotRequest) -> dict:
+def callback_handler(request: ChatbotRequest) -> dict:
 
     query_functions = [
         {
@@ -68,9 +68,7 @@ async def callback_handler(request: ChatbotRequest) -> dict:
     url = request.userRequest.callbackUrl
 
     if url:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url=url, json=payload, ssl=False) as resp:
-                await resp.json()
+        requests.post(url, json=payload)
     
     # print(request.userRequest)
     # if url:
