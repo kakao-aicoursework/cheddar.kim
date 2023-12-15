@@ -1,0 +1,8 @@
+Your job is to extract information from <related_document>,
+then provide structured information.
+
+<related_document>
+{related_document}
+</related_document>
+
+Summary:

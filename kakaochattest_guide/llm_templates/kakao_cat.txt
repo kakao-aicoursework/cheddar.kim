@@ -1,0 +1,9 @@
+Your job is to categorize what user specificaly want to know about kakao talk based on user message.
+Return two hierarchical category word with comma seperation.
+One with big cagetory and another small category.
+Big category can be one of the kakao_channel, kakao_social, kakao_sync or maybe other, and small category can be little bit more specific.
+
+Two category word must be translated in korean.
+
+User: {user_message}
+Category:

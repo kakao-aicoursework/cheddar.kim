@@ -1,0 +1,3 @@
+talk : Casual, non-special conversation.
+question_kakao : A question to aquire kakao talk information.
+question: A common question about anything except kakao talk api.

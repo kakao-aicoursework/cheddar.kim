@@ -1,115 +1,168 @@
 
 import chromadb
 import openai
-# import markdown_to_json
-import json
+import os
 import uuid
 from pathlib import Path
-from utils.langchain import get_vector_from_openai
-import time
+from langchain.vectorstores import Chroma
+from utils.const import *
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.docstore.document import Document
+from langchain.document_loaders import (
+    NotebookLoader,
+    TextLoader,
+    UnstructuredMarkdownLoader,
+)
+from langchain.text_splitter import CharacterTextSplitter
 
-def create_vectordb (persistant=False, distance_metric="l2") :
-    
-    # create vectordb client
-    client = chromadb.PersistentClient() if persistant else chromadb.EphemeralClient()
-    collection = client.get_or_create_collection(
-        name="kakao_api",
-        metadata={"hnsw:space": distance_metric}
+
+LOADER_DICT = {
+    "py": TextLoader,
+    "md": UnstructuredMarkdownLoader,
+    "ipynb": NotebookLoader,
+}
+SPECIAL_FORMAT = ["txt"]
+
+def create_vectordb () :
+    db = Chroma(
+        persist_directory=CHROMA_PERSIST_DIR,
+        embedding_function=OpenAIEmbeddings(),
+        collection_name=CHROMA_COLLECTION_NAME,
     )
-    vectordb_ids, vectordb_docs = data_vectorization_using_gpt(collection)
-    
     print("vector db completed")
-    
-    return vectordb_ids, vectordb_docs, collection
+    return db
 
-def load_kakao_text_info (text_name):
-    file_path = Path(f"datas/project_data_{text_name}.txt")
-    if file_path.is_file() :
-        return file_path.open("r", encoding="utf-8").read()
-    else :
-        raise f"file {file_path.absolute()} erorr"
 
+"""
+
+카카오 데이터 포맷에 맞춰
+
+category, title, type 으로 나누며 각각
+category : 데이터의 기본 카테고리. 카카오싱크, 카카오소셜 등
+title : 소제목. 개요, 기능 소개, 과정예시 등
+type : 본문의 타입. text, table 등
+
+으로 구성 됨
+
+"""
 def parse_markdown_manually (data_in_line:list) :
     
-    data = {}
+    meta_datas = []
+    datas = []
+    doc_title = ""
     tmp_data_name = ""
     tmp_data_context = ""
     
+    splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+    
     for i, v in enumerate(data_in_line) :
+        meta_data = {"source":"local"}
+        v = v.strip()
+        # skip empty line
         if len(v) == 0 : continue
+        # get title
         if i == 0 :
-            tmp_data_name = "doc_title"
-            tmp_data_context = v
+            doc_title = v
             continue
+        
         if v[0] == "#" :
-            data[tmp_data_name] = tmp_data_context.strip()
-            tmp_data_context = ""
+            # save previous data
+            meta_data["category"] = doc_title
+            meta_data["title"] = tmp_data_name
+            meta_data["type"] = "text"
+            
+            if len(tmp_data_context) > 0 :
+                # split text if it over chunk size
+                splitted = splitter.split_text(tmp_data_context)
+                for vv in splitted :
+                    datas.append(vv)
+                    meta_datas.append(meta_data)
+            # set new data n keep going
             tmp_data_name = v[1:].strip()
+            tmp_data_context = ""
             continue
-        tmp_data_context += "\n"
-        tmp_data_context += v
-        continue
-    
-    return data
 
-def data_vectorization_using_gpt (collection) :
+        # accumulate context
+        tmp_data_context += ("\n" + v)
     
-    temperature = 0.0
-    max_tokens = 4096
+    # save last data
+    meta_data = {}
+    meta_data["category"] = doc_title
+    meta_data["title"] = tmp_data_name
+    meta_data["type"] = "text"
+    datas.append(tmp_data_context)
+    meta_datas.append(meta_data)
+    # remove trash
+    datas.pop(0)
+    meta_datas.pop(0)
     
-    data = load_kakao_text_info("kakao_sync")
-    data = "\n".join([v.strip() for v in data.split("\n")])
-    
-    # jsonified = markdown_to_json.jsonify(data)
-    
-    parsed_data = parse_markdown_manually(data.split("\n"))
-    # print("data", parsed_data)
-    
-    ids = []
-    doc_meta = []
-    documents = {}
-    embeddings = []
+    return datas, meta_datas
 
-    doc_title = ""
-    for i, key in enumerate(parsed_data.keys()) :
-        if key == "doc_title" :
-            doc_title = parsed_data[key]
-            continue
-        id = str(uuid.uuid4())[:8]
-
-        document_to_embed = f"{key}: {parsed_data[key]}"
-
-        meta = {
-        }
-        embedding = get_vector_from_openai(document_to_embed)
-
-        ids.append(id)
-        doc_meta.append(meta)
-        documents[id] = {
-            "Doc" : doc_title,
-            "Title" : key,
-            "Contents" : parsed_data[key],
-        }
-        embeddings.append(embedding)
+def parse_kakao_doc_txt (data_in_line:list) :
     
-    # DB 저장
-    collection.add(
-        # documents=documents,
-        embeddings=embeddings,
-        # metadatas=doc_meta,
-        ids=ids
+    datas, meta_datas = parse_markdown_manually(data_in_line=data_in_line)
+    # for i in range(len(data[0])) :
+    #     print(data[0][i], data[1][i])
+    #     print("=--=-=-=-=-=-=")
+    docs = [
+        Document(page_content=data, metadata=meta_data) for data, meta_data in zip(datas, meta_datas)
+        ]
+    return docs
+
+def upload_embeddings_from_dir(dir_path):
+    failed_upload_files = []
+    for root, dirs, files in os.walk(dir_path):
+        for file in files:
+            ext = file.split(".")[-1]
+            conds = [
+                ext in SPECIAL_FORMAT,
+                ext == "py",
+                ext == "md",
+                ext == "ipynb"]
+            if any(conds) :
+                file_path = os.path.join(root, file)
+
+                try:
+                    upload_embedding_from_file(file_path, ext)
+                    print("SUCCESS: ", file_path)
+                except Exception as e:
+                    print("FAILED: ", file_path + f"by({e})")
+                    failed_upload_files.append(file_path)
+
+def upload_embedding_from_file(file_path, ext):
+    if ext == "txt" :
+        documents = Path(file_path).open("r").readlines()
+        documents = parse_kakao_doc_txt(documents)
+    else :
+        loader = LOADER_DICT.get(file_path.split(".")[-1])
+        if loader is None:
+            raise ValueError("Not supported file type")
+        documents = loader(file_path).load()
+
+    Chroma.from_documents(
+        documents,
+        OpenAIEmbeddings(),
+        collection_name=CHROMA_COLLECTION_NAME,
+        persist_directory=CHROMA_PERSIST_DIR,
     )
-    
-    return ids, documents
+    print('db success')
 
-def query_kakao_suppl_info (query_text, vectordb_ids, vectordb_docs, collection) :
+def read_embedding_from_file() :
     
-    result = collection.query(
-        query_embeddings=get_vector_from_openai(query_text),
-        n_results=2,
+    _db = Chroma.from_documents(
+        collection_name=CHROMA_COLLECTION_NAME,
+        embedding_function=OpenAIEmbeddings(),
+        persist_directory=CHROMA_PERSIST_DIR,
     )
-    
-    results = []
-    for id in result["ids"][0] :
-        results.append(vectordb_docs[id])
-    return results
+    _retriever = _db.as_retriever()
+    print('db success')
+    return _retriever
+
+def query_kakao_suppl_info (query: str, db, use_retriever: bool = False) :
+    if use_retriever:
+        docs = db.get_relevant_documents(query, k=VDB_K)
+    else:
+        docs = db.similarity_search(query, k=VDB_K)
+
+    str_docs = [doc.page_content for doc in docs]
+    return str_docs
